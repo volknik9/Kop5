@@ -1,0 +1,194 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'application'
+    id 'maven-publish'
+    id 'idea'
+    id 'ru.inforion.lab403.gradle.versionConfig'
+    id 'ru.inforion.lab403.gradle.dokkaMultilang'
+    id "com.dorongold.task-tree" version "1.5" // taskTree to see task dependencies and call graph
+}
+
+// Imports should be placed after plugins because IntelliJ will not see them otherwise
+import org.jetbrains.dokka.gradle.DokkaTask
+
+applicationName = "kopycat"
+archivesBaseName = "kopycat"
+version = '0.3.30'
+group = 'ru.inforion.lab403'
+applicationDefaultJvmArgs = [
+        "-server",
+        "-Xms1G",
+        "-Xmx8G",
+        "-XX:MaxMetaspaceSize=256m",
+        "-XX:+UseParallelGC",
+        "-XX:SurvivorRatio=6",
+        "-XX:-UseGCOverheadLimit"]
+mainClassName = "ru.inforion.lab403.kopycat.KopycatStarter"
+description = "Hardware systems Kotlin emulator"
+
+ext.productionDirectoryPath = "${rootProject.projectDir}/production"
+ext.debugJvmLine = "-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=5005"
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+dependencies {
+    implementation project(":common:proposal")
+    implementation project(":common:elfloader")
+
+    // Embedded Kotlin console
+    implementation group: 'org.jetbrains.kotlin', name: 'kotlin-script-util'
+    runtime group: 'org.jetbrains.kotlin', name: 'kotlin-scripting-compiler-embeddable'
+    runtime group: 'org.jetbrains.kotlin', name: 'kotlin-compiler-embeddable'
+
+    // Third-party logging mute out
+    implementation group: 'org.slf4j', name: 'slf4j-nop', version: '1.7.30'
+
+    // REST server interface
+    implementation group: 'io.javalin', name: 'javalin', version: '3.11.0'
+
+    // Required for kotlin-compiler-embeddable or kotlin-scripting-compiler-embeddable
+    implementation group: 'net.java.dev.jna', name: 'jna', version: '5.6.0'
+
+    // UartSerialTerminal
+    implementation group: 'com.fazecast', name: 'jSerialComm', version: '2.6.2'
+
+    // Module libraries and registry runtime-loader
+    implementation group: 'org.reflections', name: 'reflections', version: '0.9.11'
+
+    // Interactive console
+    implementation group: 'org.jline', name: 'jline', version: '3.15.0'
+
+     // Required to be here for VEOS idk why so, but if this line is put only in VEOS build.gradle Kopycat crashes in RT
+    implementation group: 'gnu.getopt', name: 'java-getopt', version: '1.0.13'
+
+    testImplementation group: 'com.github.stefanbirkner', name: 'system-rules', version: '1.19.0'
+
+//    TODO: possible not required libraries, these lines will be removed after time-testing...
+      // for ETHERNET modules, moved to according build.gradle
+//    implementation group: 'org.pcap4j', name: 'pcap4j-core', version: '1.8.2'
+//    implementation group: 'org.pcap4j', name: 'pcap4j-packetfactory-static', version: '1.8.2'
+      // License verification
+//    implementation group: 'com.github.oshi', name: 'oshi-core', version: '5.2.4'
+//    implementation 'com.auth0:java-jwt:3.8.0'
+      // idk
+//    implementation group: 'org.apache.commons', name: 'commons-text', version: '1.8'
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+
+logger.info("Setting application name = $applicationName")
+
+test {
+    useJUnit {
+        exclude '**/*MipsPerformanceTest.class'
+        exclude '**/*KopycatIntegrationTest.class'
+    }
+}
+
+task performanceTest(type: Test) {
+    useJUnit {
+        include '**/*MipsPerformanceTest.class'
+    }
+}
+
+task integrationTest(type: Test) {
+    useJUnit {
+        include '**/*KopycatIntegrationTest.class'
+    }
+}
+
+startScripts {
+    doLast {
+        new File(getOutputDir(), getApplicationName() + "-debug.bat").withWriter { w ->
+            w << windowsScript.text.replaceAll("set DEFAULT_JVM_OPTS=", "set DEFAULT_JVM_OPTS= $debugJvmLine ")
+        }
+
+        new File(getOutputDir(), getApplicationName() + "-debug").withWriter { w ->
+            w << unixScript.text.replaceAll("DEFAULT_JVM_OPTS='", "DEFAULT_JVM_OPTS='$debugJvmLine ")
+        }
+    }
+}
+
+task sourcesJar(type: Jar, dependsOn: classes) {
+    classifier = 'sources'
+    from sourceSets.main.allSource
+}
+
+distributions {
+    main {
+        contents {
+            from(sourcesJar) {
+                into "lib"
+            }
+
+            from("distrib/scripts") {
+                into "scripts"
+            }
+
+            from("distrib/bin") {
+                into "bin"
+            }
+        }
+    }
+}
+
+task copyToProduction(type: Copy, dependsOn: distZip) {
+    logger.info("Copy ${distZip.outputs.files.singleFile} into ${productionDirectoryPath}")
+    from distZip.outputs.files.singleFile
+    into "${productionDirectoryPath}"
+}
+
+task unpackToProduction(type: Copy, dependsOn: copyToProduction) {
+    logger.info("Unpack ${distZip.outputs.files.singleFile} into ${productionDirectoryPath}")
+    from zipTree(distZip.outputs.files.singleFile)
+    into "${productionDirectoryPath}"
+}
+
+task dokkaRU(type: DokkaTask) {
+    outputFormat = 'html'
+    outputDirectory = "${projectDir}/doc/RU"
+    disableAutoconfiguration = true
+
+    configuration {
+        moduleName = 'kopycat'
+        jdkVersion = 8  // fails with 11
+        includeNonPublic = false
+        skipDeprecated = false
+        skipEmptyPackages = true // Do not create index pages for empty packages
+        impliedPlatforms = ["JVM"] // See platforms section of documentation
+        noStdlibLink = false
+    }
+}
+
+task dokkaEN(type: DokkaTask) {
+    outputFormat = 'html'
+    outputDirectory = "${projectDir}/doc/EN"
+    disableAutoconfiguration = true
+
+    configuration {
+        moduleName = 'kopycat'
+        jdkVersion = 8  // fails with 11
+        includeNonPublic = false
+        skipDeprecated = false
+        skipEmptyPackages = true // Do not create index pages for empty packages
+        impliedPlatforms = ["JVM"] // See platforms section of documentation
+        noStdlibLink = false
+    }
+}
+
+dokkaMultilang {
+    targets += "java"
+    excludes += "ru/inforion/lab403/kopycat/loader"
+
+    languages {
+        english {
+            marker = "EN"
+            task = dokkaEN
+        }
+
+        russian {
+            marker = "RU"
+            task = dokkaRU
+        }
+    }
+}
